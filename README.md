@@ -116,3 +116,8 @@ DSH 的输入框 API 会随版本变化，选取结果按下面顺序落位，�
 | 重找 | 唯一性选择器 + 备用定位器 | `选择器: form#cart > button.btn-primary` |
 
 详细度可配：`textDetail: compact / standard / full`（字符预算 120 / 240 / 480）。
+
+## 贡献者
+
+- **sakikoTGW** — 维护者：拾取内核、协议扩展层、CDP、引用芯片管线
+- **Knot-chord** — [PR #1](https://github.com/sakikoTGW/dsh-element-picker/pull/1)：四通道统一拾取、伴随扩展桥接、四段插入降级、六层元素描述模型；这些思路已在本仓库重写落地（见 [CONTRIBUTORS.md](./CONTRIBUTORS.md)）
