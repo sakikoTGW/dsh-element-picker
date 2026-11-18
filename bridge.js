@@ -172,6 +172,7 @@ export function createBridge(options) {
         running: server !== null,
         port,
         armed: session.armed,
+        token: session.armed ? session.token : '',
         connected: session.connected,
         lastPollAt: session.lastPollAt,
         lastPickAt: session.lastPickAt,
