@@ -7,11 +7,12 @@
  */
 
 import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { findDebugPort, listTargets, pickInBrowser } from './cdp.js'
 import { createEngine, formatPick, userDirs } from './protocols.js'
+import { createBridge } from './bridge.js'
 
 export const name = 'element-picker'
 export const inject = ['webServer']
@@ -61,6 +62,14 @@ export function apply(ctx, config = {}) {
   // Outside-DSH picking is opt-in: the platform ceiling (Chromium exposes only the
   // window without a debug port) made it unreliable, so the default stays in-app only.
   const external = config.external === true
+  // How a pick enters the composer: DSH's own quote card first, or our reference chip.
+  const referenceStyle = config.referenceStyle === 'quote' ? 'quote' : 'chip'
+  // Companion-browser bridge: the only way into a browser the user already runs.
+  const extension = config.extension !== false
+  const extensionPort = Number.isInteger(config.extensionPort) && config.extensionPort > 1024 && config.extensionPort < 65536
+    ? config.extensionPort
+    : 45917
+  const textDetail = ['compact', 'standard', 'full'].includes(config.textDetail) ? config.textDetail : 'standard'
   const hotkey = typeof config.hotkey === 'string' && config.hotkey !== '' ? config.hotkey : 'Ctrl+Alt+P'
   const language = config.language === 'en' ? 'en' : 'zh'
 
@@ -72,6 +81,28 @@ export function apply(ctx, config = {}) {
   const generation = 'g' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
   /** @type {{ revision: number, pick: object | null }} */
   const state = { revision: 0, pick: null }
+
+  // Companion browser bridge: a loopback server the extension polls. It gets in where
+  // a debugging port cannot — a browser the user already runs, logins untouched.
+  const agentPath = join(dirname(fileURLToPath(import.meta.url)), 'extension', 'agent.js')
+  let agentSource = ''
+  const bridge = createBridge({
+    port: extensionPort,
+    agentSource: () => {
+      if (agentSource !== '') return agentSource
+      try {
+        agentSource = readFileSync(agentPath, 'utf8')
+      } catch (error) {
+        agentSource = ''
+      }
+      return agentSource
+    },
+    onPick: (pick) => {
+      state.pick = { ...pick, receivedAt: Date.now() }
+      state.revision += 1
+      health.error = ''
+    },
+  })
 
   // Providers decide what a click means; outputs decide where the pick goes. Both are
   // user-extensible, so nothing downstream assumes a specific source.
@@ -151,6 +182,26 @@ export function apply(ctx, config = {}) {
         return
       }
 
+      // The page-side picker arms the bridge for the length of one pick session; the
+      // companion extension only learns a token while armed.
+      if (url.pathname === `${ROUTE}/arm` && req.method === 'POST') {
+        const body = await readJson(req)
+        if (body !== null && body.armed === false) bridge.disarm()
+        else bridge.arm()
+        sendJson(res, 200, { ok: true, ...bridge.status() })
+        return
+      }
+
+      if (url.pathname === `${ROUTE}/extension` && req.method === 'GET') {
+        sendJson(res, 200, {
+          ...bridge.status(),
+          port: extensionPort,
+          enabled: extension,
+          installPath: join(dirname(fileURLToPath(import.meta.url)), 'extension'),
+        })
+        return
+      }
+
       if (url.pathname === `${ROUTE}/cdp/status` && req.method === 'GET') {
         const found = await findDebugPort()
         if (found === null) {
@@ -191,6 +242,8 @@ export function apply(ctx, config = {}) {
           polls: health.polls,
           clientFocused: ui.focused,
           external,
+          referenceStyle,
+          textDetail,
           pick: fresh ? state.pick : null,
         })
         return
@@ -244,6 +297,14 @@ export function apply(ctx, config = {}) {
     () => ctx.webServer.register({ kind: 'prefix', path: ROUTE, handler }),
     'element-picker: OS pick routes',
   )
+
+  // Bridge lifetime follows the mount; a token is only handed out while a pick session
+  // is armed (see the /arm route), so the loopback port is not a standing door.
+  ctx.effect(() => {
+    if (!extension) return () => {}
+    bridge.start()
+    return () => bridge.stop()
+  }, 'element-picker: companion bridge')
 
   ctx.effect(() => {
     if (!enabled || !external) return () => {}

@@ -1,6 +1,6 @@
 {
   "name": "dsh-element-picker",
-  "version": "0.10.3",
+  "version": "0.11.0",
   "description": "Reference chips: one strip icon in the right sidebar turns elements, links and file paths into native composer chips — pick from DSH itself, same-origin frames, or the sidebar browser's webview guests; the chips serialize into the prompt and point back at what they name.",
   "type": "module",
   "main": "./index.js",
@@ -13,6 +13,8 @@
     "index.js",
     "client.js",
     "cdp.js",
+    "bridge.js",
+    "extension",
     "protocols.js",
     "PROTOCOL.md",
     "README.md",

@@ -430,6 +430,14 @@ window.__ModuleLoader__.load({
           }
         }
         if (payload.context) lines.push('位置: ' + payload.context)
+        if (payload.state) lines.push('状态: ' + payload.state)
+        if (payload.box) {
+          const box = payload.box
+          const size = [box.x, box.y].join(',') + ' · ' + [box.w, box.h].join('×')
+          lines.push('画面: ' + size + (box.viewport ? ' · 视口 ' + box.viewport : ''))
+        }
+        if (payload.index) lines.push('序号: ' + payload.index)
+        if (payload.nearby) lines.push('附近: ' + payload.nearby)
         if (payload.content) lines.push('内容定位: ' + payload.content)
         if (payload.textRange) lines.push('文本区间: ' + payload.textRange)
         if (payload.resource) lines.push('资源: ' + payload.resource)
@@ -583,6 +591,90 @@ window.__ModuleLoader__.load({
       return String(text || '').replace(/\s+/g, ' ').trim().slice(0, length)
     }
 
+    /* ------------------------------------------------------ description */
+
+    /** Reference detail: compact / standard / full, set from the host state. */
+    let textDetail = 'standard'
+    const TEXT_LIMIT = { compact: 120, standard: 240, full: 480 }
+
+    function budgetText(text) {
+      const limit = TEXT_LIMIT[textDetail] || TEXT_LIMIT.standard
+      return clip(text, limit)
+    }
+
+    /** What the control currently *is*, not just what it says. */
+    function stateOf(node) {
+      const parts = []
+      const attr = (name) => {
+        const value = node.getAttribute ? node.getAttribute(name) : null
+        return value === null ? null : value
+      }
+      const expanded = attr('aria-expanded')
+      if (expanded !== null) parts.push(expanded === 'true' ? '展开' : '收起')
+      const pressed = attr('aria-pressed')
+      if (pressed === 'true') parts.push('按下')
+      const checked = attr('aria-checked')
+      if (checked !== null) parts.push(checked === 'true' ? '已勾选' : '未勾选')
+      const selected = attr('aria-selected')
+      if (selected !== null) parts.push(selected === 'true' ? '已选中' : '未选中')
+      if (attr('aria-disabled') === 'true' || node.disabled === true) parts.push('禁用')
+      if (node.type === 'checkbox' || node.type === 'radio') parts.push(node.checked ? '已勾选' : '未勾选')
+      if (attr('aria-current') !== null) parts.push('当前项')
+      return parts.join(' · ')
+    }
+
+    /** Device-pixel box plus viewport, so the reference lines up with a screenshot. */
+    function boxOf(node) {
+      const rect = node.getBoundingClientRect()
+      const dpr = window.devicePixelRatio || 1
+      return {
+        x: Math.round((rect.left + window.scrollX) * dpr),
+        y: Math.round((rect.top + window.scrollY) * dpr),
+        w: Math.round(rect.width * dpr),
+        h: Math.round(rect.height * dpr),
+        viewport: Math.round(window.innerWidth * dpr) + 'x' + Math.round(window.innerHeight * dpr),
+      }
+    }
+
+    /** Up to four siblings with a name — the local context a model cannot infer. */
+    function nearbyOf(node) {
+      const parent = node.parentElement
+      if (parent === null) return ''
+      const names = []
+      for (const child of Array.from(parent.children)) {
+        if (child === node) continue
+        if (names.length >= 4) break
+        if (child.tagName === 'SCRIPT' || child.tagName === 'STYLE') continue
+        const label = clip(child.getAttribute('aria-label') || child.textContent || '', 16)
+        if (label !== '') names.push(label)
+      }
+      return names.join(' / ')
+    }
+
+    /** Position among same-role siblings, plus table coordinates when inside one. */
+    function indexOf(node) {
+      const role = node.getAttribute('role') || node.tagName.toLowerCase()
+      let total = 0
+      let at = 0
+      const parent = node.parentElement
+      if (parent !== null) {
+        for (const child of Array.from(parent.children)) {
+          const childRole = child.getAttribute('role') || child.tagName.toLowerCase()
+          if (childRole !== role) continue
+          total += 1
+          if (child === node) at = total
+        }
+      }
+      const row = typeof node.closest === 'function' ? node.closest('tr') : null
+      if (row !== null && row.parentElement !== null) {
+        const rowIndex = Array.from(row.parentElement.children).indexOf(row) + 1
+        const cell = node.closest('td,th')
+        const colIndex = cell === null ? 0 : Array.from(row.children).indexOf(cell) + 1
+        return '#' + at + '/' + total + ' · 第' + rowIndex + '行' + (colIndex > 0 ? '第' + colIndex + '列' : '')
+      }
+      return total > 1 ? '#' + at + '/' + total : ''
+    }
+
     /** "设置 > 音频 > 输出设备" from ancestor labels and headings. */
     function contextOf(node) {
       const parts = []
@@ -661,7 +753,13 @@ window.__ModuleLoader__.load({
         resource: resourceOf(node),
         page: page || location.href,
         frame: top === null ? '' : top.getAttribute('src') || top.getAttribute('data-src') || '',
-        text: ownText(node),
+        text: budgetText(ownText(node)),
+        // The model needs what the control *is*, where it sits on screen, what is
+        // around it and how to find it again — not just a selector.
+        state: stateOf(node),
+        box: boxOf(node),
+        nearby: nearbyOf(node),
+        index: indexOf(node),
         context: contextOf(node),
         content: contentLocator(node),
         textRange: textRangeOf(node),
@@ -781,12 +879,43 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /* ------------------------------------------------------------- insert */
+
+    /**
+     * One chain, four channels: native quote card -> reference chip -> plain text ->
+     * clipboard. The composer API moves between DSH releases, and a pick must never be
+     * lost silently; the fallback says so in a toast instead of writing into the prompt.
+     */
+    let referenceStyle = 'chip'
+
+    function deliver(payload, text) {
+      const block = text || fieldsOf(payload)
+      const actions = bridge.actions
+      if (referenceStyle === 'quote' && actions !== null && typeof actions.insertQuote === 'function') {
+        try {
+          if (actions.insertQuote(block) === true) {
+            pushRecent(payload)
+            return 'quote'
+          }
+        } catch (error) { /* the composer moved on; try the next channel */ }
+      }
+      if (commitChip(payload)) return 'chip'
+      if (commitReference(block)) {
+        toast(t('insertedText'), 3200)
+        return 'text'
+      }
+      if (copyText(block)) {
+        toast(t('copiedFallback'), 4200)
+        return 'clipboard'
+      }
+      return ''
+    }
+
     /**
      * Plain-text insertion for when no chip can be made: prefer the composer's own
      * inputActions (paste rules, undoable), fall back to a DOM edit.
      */
-    function commitReference(text) {
-      const actions = bridge.actions
+    function commitReference(text) {      const actions = bridge.actions
       if (actions !== null && typeof actions.captureInsertion === 'function' && typeof actions.insertText === 'function') {
         try {
           const span = actions.captureInsertion()
@@ -1075,7 +1204,7 @@ window.__ModuleLoader__.load({
       id: 'element',
       order: 35,
       match(text, from) {
-        const pattern = /\[引用(元素|网址|文件)\][^\n]*(?:\n(?:选择器|资源|窗口|控件|定位|位置|内容定位|文本区间|页面|框架|文本|链接|路径):[^\n]*)*/gu
+        const pattern = /\[引用(元素|网址|文件)\][^\n]*(?:\n(?:选择器|资源|窗口|控件|定位|位置|状态|画面|序号|附近|内容定位|文本区间|页面|框架|文本|链接|路径):[^\n]*)*/gu
         pattern.lastIndex = from
         const found = pattern.exec(text)
         if (found === null) return undefined
@@ -1086,10 +1215,14 @@ window.__ModuleLoader__.load({
         const data = { kind, label, selector: '', resource: '', page: '', frame: '', text: '', url: '', path: '', raw }
         const os = { window: '', control: '', locator: '', box: '' }
         for (const line of lines.slice(1)) {
-          const field = /^(选择器|资源|窗口|控件|定位|位置|内容定位|文本区间|页面|框架|文本|链接|路径):\s*(.*)$/u.exec(line)
+          const field = /^(选择器|资源|窗口|控件|定位|位置|状态|画面|序号|附近|内容定位|文本区间|页面|框架|文本|链接|路径):\s*(.*)$/u.exec(line)
           if (field === null) continue
           if (field[1] === '选择器') data.selector = field[2]
           else if (field[1] === '资源') data.resource = field[2]
+          else if (field[1] === '状态') data.state = field[2]
+          else if (field[1] === '画面') data.screen = field[2]
+          else if (field[1] === '序号') data.index = field[2]
+          else if (field[1] === '附近') data.nearby = field[2]
           else if (field[1] === '内容定位') data.content = field[2]
           else if (field[1] === '文本区间') data.textRange = field[2]
           else if (field[1] === '窗口') os.window = field[2]
@@ -1367,10 +1500,9 @@ window.__ModuleLoader__.load({
         if (payload !== null) {
           const reference = fieldsOf(payload)
           payload.clipboard = reference
-          if (commitChip(payload)) return
-          // No chip possible: a file still has its native text form.
+          // Files first: DSH's own `@path` reference is strictly better than any chip.
           if (payload.kind === 'file' && payload.path && commitReference(mentionOf(payload.path))) return
-          if (commitReference(reference)) return
+          if (deliver(payload, reference) !== '') return
         }
         ensureUi()
         warn(payload === null ? t('pickFailed') : t('noComposer'))
@@ -1499,7 +1631,7 @@ window.__ModuleLoader__.load({
                 text: picked.text,
                 clipboard: reference,
               }
-              if (!commitChip(payload) && !commitReference(reference)) {
+              if (deliver(payload, reference) === '') {
                 ensureUi()
                 warn(t('noComposer'))
               }
@@ -1536,6 +1668,19 @@ window.__ModuleLoader__.load({
         }
       }
 
+      /** Tell the host to open/close the companion-browser bridge for this session. */
+      function armBridge(armed) {
+        try {
+          fetch('/element-picker/os/arm', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ armed: armed === true }),
+          }).catch(() => {})
+        } catch (error) {
+          /* host not mounted yet */
+        }
+      }
+
       function start() {
         if (active) return
         try {
@@ -1555,12 +1700,16 @@ window.__ModuleLoader__.load({
         scanTimer = setInterval(scan, 1000)
         viewTimer = setInterval(pollWebviews, 150)
         pollWebviews()
+        // Arm the companion bridge: the extension only sees a token while a session
+        // is open, so the loopback port is not a standing door.
+        armBridge(true)
       }
 
       function stop() {
         if (!active) return
         active = false
         hovered = null
+        armBridge(false)
         clearInterval(scanTimer)
         scanTimer = 0
         clearInterval(viewTimer)
@@ -1736,6 +1885,30 @@ window.__ModuleLoader__.load({
           } catch (error) { /* ignore */ }
           closeRecent()
         })
+        // Companion browser extension: status plus where to load it from.
+        const extRow = document.createElement('button')
+        extRow.type = 'button'
+        extRow.className = 'dsh-ep-recent-row'
+        extRow.style.margin = '0 0 4px'
+        extRow.textContent = t('extMenu')
+        extRow.addEventListener('click', async () => {
+          closeRecent()
+          try {
+            const response = await fetch('/element-picker/os/extension', { cache: 'no-store' })
+            const info = await response.json()
+            if (info.connected === true && info.armed === true) {
+              toast(t('extConnected').replace('{port}', String(info.port)), 4600)
+            } else if (info.enabled === false) {
+              toast(t('extDisabled'), 4600)
+            } else {
+              copyText(info.installPath || '')
+              toast(t('extMissing').replace('{path}', info.installPath || ''), 8000)
+            }
+          } catch (error) {
+            toast(t('extOffline'), 4000)
+          }
+        })
+        box.appendChild(extRow)
         title.appendChild(clear)
         box.appendChild(title)
         if (list.length === 0) {
@@ -1855,6 +2028,13 @@ window.__ModuleLoader__.load({
                 recentEmpty: '还没有引用过',
                 osPicked: '已引用外部控件：{label}',
                 cdpHint: '浏览器里的元素需要以 --remote-debugging-port=9222 启动（先完全退出浏览器再启动）',
+                insertedText: '已以纯文本插入引用（当前版本不支持引用卡）',
+                extMenu: '浏览器扩展…',
+                extConnected: '扩展已连接（端口 {port}），现在可以在浏览器里点元素',
+                extMissing: '扩展未连接。目录已复制：{path} → 打开 edge://extensions 开启开发者模式，加载解压缩的扩展',
+                extDisabled: '扩展桥接已在配置里关闭（config.extension: false）',
+                extOffline: '扩展状态读取失败，插件宿主可能未挂载',
+                copiedFallback: '引用已复制到剪贴板，粘贴即可',
                 osHint: '外部窗口 {hotkey}',
                 osHintToast: '外部窗口元素：按 {hotkey} 进入选取，点一下就会进输入框',
               },
@@ -1879,6 +2059,13 @@ window.__ModuleLoader__.load({
                 recentEmpty: 'Nothing yet',
                 osPicked: 'Referenced external control: {label}',
                 cdpHint: 'Browser elements need --remote-debugging-port=9222 (quit the browser fully, then relaunch with it)',
+                insertedText: 'Inserted the reference as plain text (this build has no quote card)',
+                extMenu: 'Browser extension…',
+                extConnected: 'Extension connected (port {port}) — pick elements in your browser now',
+                extMissing: 'Extension not connected. Folder copied: {path} → open edge://extensions, enable developer mode, load unpacked',
+                extDisabled: 'The extension bridge is switched off (config.extension: false)',
+                extOffline: 'Could not read the extension status; is the host half mounted?',
+                copiedFallback: 'Reference copied — paste it into the composer',
                 osHint: 'outside window: {hotkey}',
                 osHintToast: 'Outside DSH: press {hotkey} to pick, click to insert',
               },
@@ -2062,6 +2249,8 @@ window.__ModuleLoader__.load({
               osRevision = Math.max(osRevision, state.revision)
             }
             if (typeof state.hotkey === 'string') strip.setHotkey(state.external === true ? state.hotkey : '')
+            if (typeof state.referenceStyle === 'string') referenceStyle = state.referenceStyle === 'quote' ? 'quote' : 'chip'
+            if (typeof state.textDetail === 'string' && state.textDetail in TEXT_LIMIT) textDetail = state.textDetail
             const pick = state.pick
             if (pick === null || pick === undefined) return
             // A provider decides the kind; the chip follows it. `file` and `url` picks
@@ -2080,9 +2269,10 @@ window.__ModuleLoader__.load({
               toast(t('osPicked').replace('{label}', urlLabel))
               return true
             }
-            if (pick.cdp === true || pick.provider === 'browser-cdp' || pick.selector) {
-              // A browser tab answered over the DevTools protocol (or a user provider
-              // returned a real selector): this is a DOM element like an in-app pick.
+            if (pick.cdp === true || pick.provider === 'browser-cdp' || pick.provider === 'extension' || pick.selector) {
+              // A browser tab answered over the DevTools protocol, or the companion
+              // extension posted the pick: a DOM element like an in-app pick, with the
+              // full description the page kernel collected.
               const domLabel = String(pick.label || pick.text || '').trim().slice(0, 60)
               if (domLabel === '') return
               const domPayload = {
@@ -2091,8 +2281,14 @@ window.__ModuleLoader__.load({
                 selector: String(pick.selector || ''),
                 page: String(pick.page || ''),
                 text: String(pick.text || ''),
+                state: typeof pick.state === 'string' ? pick.state : '',
+                box: pick.box && typeof pick.box === 'object' ? pick.box : null,
+                nearby: typeof pick.nearby === 'string' ? pick.nearby : '',
+                index: typeof pick.index === 'string' ? pick.index : '',
+                context: typeof pick.context === 'string' ? pick.context : '',
+                content: typeof pick.content === 'string' ? pick.content : '',
               }
-              if (!commitChip(domPayload)) commitReference(fieldsOf(domPayload))
+              if (deliver(domPayload, fieldsOf(domPayload)) === '') return
               toast(t('osPicked').replace('{label}', domLabel))
               return true
             }
@@ -2117,7 +2313,7 @@ window.__ModuleLoader__.load({
                 windowOnly: pick.windowOnly === true,
               },
             }
-            if (!commitChip(payload)) commitReference(fieldsOf(payload))
+            deliver(payload, fieldsOf(payload))
             // A browser window that could not be read means the DevTools port is off;
             // say so instead of leaving the user with a window-level chip.
             if (pick.cdpReason) toast(t('cdpHint'), 5000)

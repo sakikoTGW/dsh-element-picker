@@ -59,6 +59,24 @@ try {
   ok('pick readable back', after.pick && after.pick.label === sample.label, JSON.stringify(after.pick))
   ok('generation present', typeof after.generation === 'string' && after.generation.length > 0)
 
+  // Companion bridge: the loopback server the extension polls.
+  const ext = await json('/element-picker/os/extension')
+  ok('extension bridge reports', typeof ext.running === 'boolean' && typeof ext.port === 'number', JSON.stringify(ext))
+  ok('extension path exists', typeof ext.installPath === 'string' && ext.installPath.length > 0)
+
+  const armed = await json('/element-picker/os/arm', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ armed: true }),
+  })
+  ok('bridge arms', armed.armed === true && typeof armed.token === 'string' && armed.token.length > 0)
+  const disarmed = await json('/element-picker/os/arm', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ armed: false }),
+  })
+  ok('bridge disarms', disarmed.armed === false)
+
   const cdp = await json('/element-picker/os/cdp/status')
   console.log('· cdp:', cdp.available ? 'port ' + cdp.port + ' (' + cdp.browser + ')' : 'no debugging port')
 } catch (error) {

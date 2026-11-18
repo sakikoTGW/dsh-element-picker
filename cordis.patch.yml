@@ -4,3 +4,10 @@
       config:
         hotkey: 'Ctrl+Alt+P'
         external: false
+        # 引用进输入框的形态：chip（自定义 chip）/ quote（先用 DSH 原生引用卡）
+        referenceStyle: chip
+        # 引用块详细度：compact / standard / full
+        textDetail: standard
+        # 伴随浏览器扩展桥接（回环端口 + 一次性 token）
+        extension: true
+        extensionPort: 45917

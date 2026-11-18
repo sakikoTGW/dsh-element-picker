@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "DSH 元素引用",
+  "version": "1.0.0",
+  "description": "在任意网页里点一个元素，把它变成 DSH 输入框里的引用。从 DSH 侧栏图标的右键菜单启动选取。",
+  "permissions": ["scripting", "tabs", "activeTab", "alarms"],
+  "host_permissions": ["http://*/*", "https://*/*", "file:///*"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*", "file:///*"],
+      "js": ["keepalive.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "action": { "default_title": "DSH 元素引用：在 DSH 里右键图标开始选取" }
+}
