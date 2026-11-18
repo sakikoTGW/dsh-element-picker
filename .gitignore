@@ -1,0 +1,7 @@
+# runtime helper state (held open while the picker runs)
+os-pick.lock
+
+# dependencies / scratch
+node_modules/
+*.log
+.DS_Store

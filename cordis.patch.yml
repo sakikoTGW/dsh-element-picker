@@ -1,0 +1,6 @@
+- insert:
+    - id: element-picker
+      name: 'dsh-element-picker'
+      config:
+        hotkey: 'Ctrl+Alt+P'
+        external: false
